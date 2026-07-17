@@ -102,7 +102,7 @@ def remove_sample_steps(steps_list):
 
 
 # fn, array, array, class, string, dict, list -> dict
-def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, scoring_list = None):
+def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, scoring_list = None, output = False):
     """ 
     Performs Cross Validation for XGBoost, Random Forest, Logistic regression given preprocessing steps
 
@@ -124,7 +124,7 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
     if hasattr(y, 'to_numpy'):
         y = y.to_numpy()
     if scoring_list is None:
-        scoring_list = ['accuracy', 'f1', 'roc_auc']
+        scoring_list = ['average_precision','accuracy', 'f1', 'roc_auc']
     
     if classifiers is None:
         classifiers = {
@@ -178,5 +178,7 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
         for metric in scoring_list:
             key = f"test_{metric}"
             print(f"{metric}: {np.mean(results_dict[name][key])}, 'Variance:' {np.var(results_dict[name][key])}")
-    
-    return results_dict
+    if output:
+        return results_dict
+
+
