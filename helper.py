@@ -94,9 +94,9 @@ def remove_sample_steps(steps_list):
     List of steps, this a list of pairs with first value the name and the second the actual instance
     """
     counter = -1 # index of where we remove up to
-    for i, _ in enumerate(steps_list):
-        if hasattr(steps_list[-i][-1], 'fit_resample'):
-            counter = -i
+    for i, _ in enumerate(steps_list): # i starts from 0 but we want it to actually start from 1
+        if hasattr(steps_list[-i-1][-1], 'fit_resample'):
+            counter = -i-1
         else:
             return steps_list[:counter]
 
@@ -124,7 +124,7 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
     if hasattr(y, 'to_numpy'):
         y = y.to_numpy()
     if scoring_list is None:
-        scoring_list = ['accuracy', 'f1']
+        scoring_list = ['accuracy', 'f1', 'roc_auc']
     
     if classifiers is None:
         classifiers = {
