@@ -5,8 +5,10 @@ from sklearn.model_selection import cross_validate
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import get_scorer
+from sklearn.metrics import get_scorer, fbeta_score, make_scorer
 from sklearn.base import clone
+import warnings
+warnings.filterwarnings('ignore')
 
 
 # COMMENT: This is the old version, there were some inefficiencies present here
@@ -80,7 +82,10 @@ def multiple_score(estimator,X,y, scoring_list):
 
     for score in scoring_list:
         key = f"test_{score}"
-        scorer = get_scorer(score)
+        if score == 'fbeta':
+            scorer = make_scorer(fbeta_score, beta = 2) # beta set to 2 here for this problem
+        else:
+            scorer = get_scorer(score)
         results[key] = scorer(estimator, X, y)
     
     return results
@@ -124,7 +129,7 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
     if hasattr(y, 'to_numpy'):
         y = y.to_numpy()
     if scoring_list is None:
-        scoring_list = ['average_precision','accuracy', 'f1', 'roc_auc']
+        scoring_list = ['fbeta','average_precision','recall','precision', 'f1']
     
     if classifiers is None:
         classifiers = {
@@ -174,7 +179,7 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
 
     # this loop is separate because we need all of the values before we can compute the mean and variance and print them
     for name, model in classifiers.items():
-        print(name, label, 'Results:')
+        print('---',name, label, 'Results:')
         for metric in scoring_list:
             key = f"test_{metric}"
             print(f"{metric}: {np.mean(results_dict[name][key])}, 'Variance:' {np.var(results_dict[name][key])}")
