@@ -187,3 +187,162 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
         return results_dict
 
 
+
+# We code Stability Selection
+
+# Stability Selection is a feature selection method
+# We will try to match the syntax with SKLearn(we will choose to not include some methods)
+# This means that StabilitySelection should be a class
+# Stability selection will be class that holds BaseEstimator and TransformerMixin(this is just convention)
+
+# Stability selection takes in an estimator(default should be LASSO), the number of resamples to take(n_bootstrap)
+# the size of each of the samples(sample_fraction)
+# ========================================
+# side note: we use bootstrapping here which is with replacement to mimic a sample of a large population. We want to see how sampling and chance would affect
+# the parameters chosen in this case, so if we used without replacement, we wouold get very similar samples that do not appear to be from a theoretically
+# large or nearly infinite population
+# ========================================
+# as well as the threshold to include a variable
+
+# Stability selection works by taking many bootstrapped random samples, then looking at which ones get used by LASSO(which will automatically eliminate irrelevant features)
+# In the end, we calculate the probability that a certain variable was used, if it surpasses a certain amount(the threshold), then we include it
+
+# The reason why stability selection works is that we are essentially filtering out the noise. We take bootstrapped samples to simulate
+# sample a large population, and we look at how often a certain variable actually matters in this sample
+# if it is often enough, then we include it. Otherwise it was just random and thus noise
+
+
+# from sklearn.base import BaseEstimator, TransformerMixin
+# from sklearn.utils.validation import check_is_fitted, check_array
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.utils import resample
+# import numpy as np
+
+# class StabilitySelection(BaseEstimator, TransformerMixin):
+#     """
+#     A class for Stability Selection
+
+#     Args
+#     Estimator: where feature importance is derived from
+#     n_bootstrap: number of iterations
+#     sample_fraction: size of the sample relative to X
+#     threshold: minimum importance probability to get included
+#     random_state: random state seed
+#     """
+
+#     def __init__(self, estimator=None, n_bootstrap=100, sample_fraction=0.5, threshold=0.6, random_state=0): # we first initialize all of the variables
+#         self.estimator = estimator
+#         self.n_bootstrap = n_bootstrap
+#         self.sample_fraction = sample_fraction
+#         self.threshold = threshold
+#         self.random_state = random_state
+
+#     def fit(self, X, y): # this should return itself with certain attributes defined, features_selected, selection_frequency
+#         """
+#         A class method to fit the stability selection transformer
+
+#         Args
+#         X: the data of input variables
+#         y: the data of target variable(s)
+#         """
+#         X = check_array(X)
+#         n_samples, n_features = X.shape
+#         sample_fraction = self.sample_fraction
+#         n_iterations = self.n_bootstrap
+#         rng = np.random.RandomState(seed = self.random_state) # we need to have a seeded rng for the subsamples
+#         estimator = self.estimator or LogisticRegression(penalty = 'l1', solver = 'liblinear', random_state = self.random_state)
+#         appearance_count = np.zeros(n_features) # We also need to count how many times each feature appeared
+
+        
+#         for i in range(0,n_iterations):
+#             X_resampled, y_resampled = resample(X, y, n_samples = int(n_samples * sample_fraction), random_state=rng.randint(0, 1000000), stratify = y)
+#             model = clone(estimator)
+#             model.fit(X_resampled,y_resampled)
+#             coef = model.coef_.ravel()
+#             coef = (coef != 0).astype(int) # applies != 0 on coef, then converts to int
+#             appearance_count += coef # vectorized operations are faster than looping and iterating through
+
+#         selection_frequency = appearance_count/n_iterations # gives probability of appearance
+#         self.selection_frequency_ = selection_frequency
+#         self.features_selected_ = np.where(selection_frequency >= self.threshold) # returns the indices of the selected features
+#         self.n_features_in_ = n_features # number of features in 
+#         return self
+
+#     def transform(self, X): # this should return X with only the selected features
+#         """
+#         Applying Stability Selection once the transformer is fitted
+        
+#         Args
+#         X: data of input variables
+#         """
+#         check_is_fitted(self, 'features_selected_') # checks if features_selected_ appears, otherwise raises an error
+#         check_array(X)
+#         return X[:, self.features_selected_]
+
+#     def get_feature_names_out(self, input_features = None): # this should return the names of the features. If not provided, then return the indices
+#         """
+#         Returning the selected feature names of a fitted Stability Selection Transformer
+
+#         Args
+#         input_features: List of input feature names
+#         """
+#         check_is_fitted(self, 'features_selected_')
+#         if input_features is None:
+#             input_features = [f"x{i}" for i in range(self.n_features_in_)]
+#         return np.array(input_features)[self.features_selected_]
+
+
+
+            
+
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.utils.validation import check_is_fitted, check_array
+from sklearn.linear_model import LogisticRegression
+from sklearn.utils import resample
+import numpy as np
+
+class StabilitySelection(BaseEstimator, TransformerMixin):
+    def __init__(self, estimator=None, n_bootstrap=100, sample_fraction=0.75,
+                 threshold=0.6, random_state=None):
+        self.estimator = estimator
+        self.n_bootstrap = n_bootstrap
+        self.sample_fraction = sample_fraction
+        self.threshold = threshold
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        X = check_array(X)
+        n_samples, n_features = X.shape
+        base_estimator = self.estimator or LogisticRegression(
+            penalty='l1', solver='liblinear', random_state=self.random_state
+        )
+        rng = np.random.RandomState(self.random_state)
+        selection_counts = np.zeros(n_features)
+
+        for i in range(self.n_bootstrap):
+            X_resampled, y_resampled = resample(
+                X, y, n_samples=int(n_samples * self.sample_fraction),
+                random_state=rng.randint(0, 1_000_000), stratify=y
+            )
+            model = clone(base_estimator)
+            model.fit(X_resampled, y_resampled)
+            coefs = model.coef_.ravel()
+            selection_counts += (np.abs(coefs) > 1e-8).astype(int)
+
+        self.selection_frequency_ = selection_counts / self.n_bootstrap
+        self.selected_features_ = np.where(self.selection_frequency_ >= self.threshold)[0]
+        self.n_features_in_ = n_features
+        return self
+
+    def transform(self, X):
+        check_is_fitted(self, 'selected_features_')
+        X = check_array(X)
+        return X[:, self.selected_features_]
+
+    def get_feature_names_out(self, input_features=None):
+        check_is_fitted(self, 'selected_features_')
+        if input_features is None:
+            input_features = [f"x{i}" for i in range(self.n_features_in_)]
+        return np.array(input_features)[self.selected_features_]
+
+
