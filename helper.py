@@ -295,41 +295,194 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
 
             
 
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.utils.validation import check_is_fitted, check_array
+# from sklearn.base import BaseEstimator, TransformerMixin
+# from sklearn.utils.validation import check_is_fitted, check_array
+# from sklearn.linear_model import LogisticRegression
+# from sklearn.utils import resample
+# import numpy as np
+
+# class StabilitySelection(BaseEstimator, TransformerMixin):
+#     def __init__(self, estimator=None, n_bootstrap=100, sample_fraction=0.75,
+#                  threshold=0.6, random_state=None):
+#         self.estimator = estimator
+#         self.n_bootstrap = n_bootstrap
+#         self.sample_fraction = sample_fraction
+#         self.threshold = threshold
+#         self.random_state = random_state
+
+#     def fit(self, X, y):
+#         X = check_array(X)
+#         n_samples, n_features = X.shape
+#         base_estimator = self.estimator or LogisticRegression(
+#             penalty='l1', solver='liblinear', random_state=self.random_state
+#         )
+#         rng = np.random.RandomState(self.random_state)
+#         selection_counts = np.zeros(n_features)
+
+#         for i in range(self.n_bootstrap):
+#             X_resampled, y_resampled = resample(
+#                 X, y, n_samples=int(n_samples * self.sample_fraction),
+#                 random_state=rng.randint(0, 1_000_000), stratify=y
+#             )
+#             model = clone(base_estimator)
+#             model.fit(X_resampled, y_resampled)
+#             coefs = model.coef_.ravel()
+#             selection_counts += (np.abs(coefs) > 1e-8).astype(int)
+
+#         self.selection_frequency_ = selection_counts / self.n_bootstrap
+#         self.selected_features_ = np.where(self.selection_frequency_ >= self.threshold)[0]
+#         self.n_features_in_ = n_features
+#         return self
+
+#     def transform(self, X):
+#         check_is_fitted(self, 'selected_features_')
+#         X = check_array(X)
+#         return X[:, self.selected_features_]
+
+#     def get_feature_names_out(self, input_features=None):
+#         check_is_fitted(self, 'selected_features_')
+#         if input_features is None:
+#             input_features = [f"x{i}" for i in range(self.n_features_in_)]
+#         return np.array(input_features)[self.selected_features_]
+
+
+"""
+Stability Selection (Meinshausen & Bühlmann, 2010)
+
+Fits L1-regularized logistic regression across a range of regularization
+strengths ("stability path"), on many bootstrap resamples of the data.
+A feature's stability score is the MAXIMUM selection frequency it achieves
+across that entire regularization path -- not its frequency at one fixed
+strength. This is what distinguishes proper stability selection from a
+simpler "bootstrap-aggregated Lasso at one C" heuristic, and is what gives
+the method its theoretical error-control properties.
+"""
+
+import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.linear_model import LogisticRegression
 from sklearn.utils import resample
-import numpy as np
+from sklearn.utils.validation import check_is_fitted, check_array
+
 
 class StabilitySelection(BaseEstimator, TransformerMixin):
+    """
+    Select features that are consistently chosen by L1-regularized logistic
+    regression across many bootstrap resamples and a range of regularization
+    strengths.
+
+    Args
+    estimator : estimator object, optional
+        Base estimator to fit on each bootstrap. Must expose `coef_` after
+        fitting (i.e. a linear model). Defaults to L1-penalized
+        LogisticRegression with the 'liblinear' solver.
+        note: regularization strength of the estimator is ignored, we sweep
+        C values manually
+
+    n_bootstrap : int, default=100
+        Total number of bootstrap fits. Split evenly across each value in
+        `Cs`, so the per-C bootstrap count is n_bootstrap // len(Cs).
+
+    sample_fraction : float, default=0.75
+        Fraction of the training data drawn with stratification in each
+        bootstrap resample.
+
+    Cs : array-like, default=np.logspace(-2, 1, 10)
+        The regularization path to sweep. Smaller C means stronger penalty
+        which means more zeroes. The default spans a wide range
+        which can be narrowed once we've inspected where the data's
+        selection frequencies actually separate
+
+    threshold : float, default=0.6
+        A feature is selected if its maximum selection frequency across
+        the Cs path meets or exceeds this value. The original paper's
+        theoretical guarantees hold for thresholds roughly in the 0.6-0.9
+        range. This assumes the selection frequencies are
+        well-separated i.e. bimodal to begin with. If they aren't
+        (check via `plot_stability_path`), no threshold value in this
+        range is "correct," since you're not really choosing
+        between two separated groups.
+
+    random_state : int, optional
+        Seed for reproducibility. Each bootstrap draws its own derived
+        seed from this master seed, so resamples are different
+        from each other while the whole run stays reproducible.
+
+    Attributes (set after fit)
+    selection_path_ : ndarray of shape (n_features, len(Cs))
+        Selection frequency of each feature at each C value individually
+        useful for diagnosing whether your Cs range is well-chosen.
+
+    selection_frequency_ : ndarray of shape (n_features,)
+        Maximum selection frequency per feature across the whole Cs path.
+
+    selected_features_ : ndarray
+        Integer column indices of features meeting `threshold`.
+
+    n_features_in_ : int
+        Number of features seen during fit.
+    """
+
     def __init__(self, estimator=None, n_bootstrap=100, sample_fraction=0.75,
-                 threshold=0.6, random_state=None):
+                 Cs=None, threshold=0.6, random_state=None):
         self.estimator = estimator
         self.n_bootstrap = n_bootstrap
         self.sample_fraction = sample_fraction
+        self.Cs = Cs
         self.threshold = threshold
         self.random_state = random_state
 
     def fit(self, X, y):
         X = check_array(X)
+        y = np.asarray(y)
         n_samples, n_features = X.shape
+
         base_estimator = self.estimator or LogisticRegression(
             penalty='l1', solver='liblinear', random_state=self.random_state
         )
+        Cs = self.Cs if self.Cs is not None else np.logspace(-2, 1, 10)
+
         rng = np.random.RandomState(self.random_state)
-        selection_counts = np.zeros(n_features)
+        n_iter_per_C = max(1, self.n_bootstrap // len(Cs))
 
-        for i in range(self.n_bootstrap):
-            X_resampled, y_resampled = resample(
-                X, y, n_samples=int(n_samples * self.sample_fraction),
-                random_state=rng.randint(0, 1_000_000), stratify=y
-            )
-            model = clone(base_estimator)
-            model.fit(X_resampled, y_resampled)
-            coefs = model.coef_.ravel()
-            selection_counts += (np.abs(coefs) > 1e-8).astype(int)
+        # Per-C selection counts, so we can inspect the path afterward
+        # and diagnose whether Cs was well-chosen not just the final
+        # max-aggregated result.
+        selection_path = np.zeros((n_features, len(Cs)))
 
-        self.selection_frequency_ = selection_counts / self.n_bootstrap
+        for c_idx, C in enumerate(Cs):
+            counts = np.zeros(n_features)
+            for _ in range(n_iter_per_C):
+                X_resampled, y_resampled = resample(
+                    X, y,
+                    n_samples=int(n_samples * self.sample_fraction),
+                    random_state=rng.randint(0, 1_000_000),
+                    stratify=y  # preserves class ratio in every bootstrap --
+                                # important given how few minority examples
+                                # exist, an unstratified draw could easily
+                                # produce a bootstrap with even fewer
+                )
+                model = clone(base_estimator)
+                model.set_params(C=C)  # override whatever C the passed
+                                        # estimator had, we're sweeping it
+                model.fit(X_resampled, y_resampled)
+
+                coefs = model.coef_.ravel()
+                # 1e-8 tolerance, not `!= 0`: L1 conceptually zeros
+                # coefficients, but floating point arithmetic rarely
+                # lands on an exact zero, so a strict != 0 check would
+                # miss coefficients that are effectively zero.
+                counts += (np.abs(coefs) > 1e-8).astype(int)
+
+            selection_path[:, c_idx] = counts / n_iter_per_C
+
+        # The core stability selection idea: a feature's stability score
+        # is its BEST (max) showing anywhere along the regularization path,
+        # not its score at one arbitrary fixed C. A feature that's reliably
+        # selected at even one sensible regularization strength counts as
+        # stable
+        self.selection_path_ = selection_path
+        self.selection_frequency_ = selection_path.max(axis=1)
         self.selected_features_ = np.where(self.selection_frequency_ >= self.threshold)[0]
         self.n_features_in_ = n_features
         return self
@@ -344,5 +497,41 @@ class StabilitySelection(BaseEstimator, TransformerMixin):
         if input_features is None:
             input_features = [f"x{i}" for i in range(self.n_features_in_)]
         return np.array(input_features)[self.selected_features_]
+
+    def plot_stability_path(self, feature_names=None, top_n=20):
+        """
+        Diagnostic plot: shows each feature's selection frequency across
+        the Cs sweep. Use this before trusting `threshold`. If the top
+        features show a clean plateau near 1.0 that clearly separates from
+        a cluster near 0.0, your threshold choice barely matters. If
+        instead frequencies are smoothly spread with no separation, that's
+        a sign either Cs needs adjusting, or the data doesn't
+        support confident feature selection at your sample size
+        """
+        check_is_fitted(self, 'selection_path_')
+        import matplotlib.pyplot as plt
+
+        Cs = self.Cs if self.Cs is not None else np.logspace(-2, 1, 10)
+        top_idx = np.argsort(self.selection_frequency_)[::-1][:top_n]
+
+        plt.figure(figsize=(8, 5))
+        for idx in top_idx:
+            label = feature_names[idx] if feature_names is not None else f"x{idx}"
+            plt.plot(Cs, self.selection_path_[idx], alpha=0.6, label=label)
+        plt.xscale('log')
+        plt.xlabel('C (regularization strength)')
+        plt.ylabel('Selection frequency')
+        plt.title(f'Stability path — top {top_n} features by max frequency')
+        plt.axhline(self.threshold, color='red', linestyle='--', label=f'threshold={self.threshold}')
+        plt.legend(fontsize=7, loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.tight_layout()
+        plt.show()
+
+        # print the overall distribution shape as a quick numeric check
+        freq = self.selection_frequency_
+        print(f"Selection frequency distribution:")
+        print(f"  < 0.2: {np.sum(freq < 0.2)} features")
+        print(f"  0.2-0.6: {np.sum((freq >= 0.2) & (freq < 0.6))} features  <- ambiguous zone")
+        print(f"  >= 0.6: {np.sum(freq >= 0.6)} features")
 
 
