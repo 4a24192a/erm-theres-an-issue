@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from imblearn.pipeline import Pipeline as ImbPipeline
-from sklearn.model_selection import cross_validate
+from sklearn.model_selection import cross_validate, StratifiedKFold
 from xgboost import XGBClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
@@ -186,6 +186,117 @@ def cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers = None, s
     if output:
         return results_dict
 
+
+# fn, array, array, class, string, dict, list -> dict
+def nested_cv_comparison(preprocessing_fn, X, y, cv_split, label, classifiers=None, scoring_list=None, output=False):
+    """
+    Nested Cross-Validation that provides unbiased performance estimates by
+    treating the entire pipeline (preprocessing + feature selection + model)
+    as a single unit.
+
+    The Problem with cv_comparison:
+    In cv_comparison, the preprocessing pipeline (including feature selection
+    via SelectFromModel) is fit on the training fold, then a separate model is
+    trained on the transformed training fold and evaluated on the transformed
+    test fold. While this is technically correct per fold, the CV estimate can
+    be optimistic because:
+      - All folds are drawn from the same X_train pool
+      - Feature selection adapts to distributional characteristics shared
+        across the pool, which inflates scores for data from that same pool
+      - A truly held-out test set does not share these characteristics, so
+        performance drops when evaluated on it
+
+    How nested_cv_comparison fixes this:
+    Instead of separating preprocessing from the model, we build a complete
+    ImbPipeline that includes the model as the final step. We then use
+    sklearn's cross_validate on this full pipeline. This means:
+      - The entire pipeline (imputation, scaling, feature selection, sampling,
+        AND the classifier) is treated as one estimator
+      - cross_validate handles the fold splitting, fitting, and scoring
+      - Feature selection never sees the test fold, not even indirectly
+      - The resulting scores are a more realistic estimate of generalization
+
+    Input:
+    preprocessing_fn: A function that returns a list of (name, transformer)
+        tuples. This should include ALL steps including the model/classifier
+        as the last step. If the last step is a sampler (has fit_resample),
+        then the model should be the second-to-last non-sampler step or
+        included after sampling steps (the ImbPipeline handles this).
+    X, y: the data to apply cross validation on
+    cv_split: cross validation splitter (e.g. RepeatedStratifiedKFold)
+    label: string label for printing results
+    classifiers: dictionary of {name: (model, preprocessing_fn)} pairs.
+        Each preprocessing_fn should return steps that include the model.
+        If None, uses default classifiers with standard preprocessing.
+    scoring_list: list of scoring metric names
+    output: if True, returns the results dictionary
+
+    Returns:
+    A dictionary with estimator names as keys, linked to dictionaries each
+    of which have scoring methods as keys linked to arrays of fold scores.
+    """
+    if hasattr(X, 'to_numpy'):
+        X = X.to_numpy()
+    if hasattr(y, 'to_numpy'):
+        y = y.to_numpy()
+
+    if scoring_list is None:
+        scoring_list = ['fbeta', 'average_precision', 'recall', 'precision', 'f1']
+
+    # Build the scoring dictionary that cross_validate expects
+    scoring_dict = {}
+    for metric in scoring_list:
+        if metric == 'fbeta':
+            scoring_dict[metric] = make_scorer(fbeta_score, beta=2)
+        else:
+            scoring_dict[metric] = metric
+
+    # If classifiers is None, use defaults with full pipeline (preprocessing + model)
+    if classifiers is None:
+        classifiers = {
+            'XGBoost': XGBClassifier(max_depth=5, learning_rate=0.1, random_state=0),
+            'Random Forest': RandomForestClassifier(max_depth=5, random_state=0),
+            'Logistic Regression': LogisticRegression(max_iter=1000, random_state=0)
+        }
+
+    results_dict = {}
+
+    for name, model in classifiers.items():
+        # Build the full pipeline: preprocessing steps + classifier
+        # The key difference from cv_comparison: the model is INSIDE the pipeline
+        # so cross_validate treats the whole thing (feature selection + model) as one unit
+        full_pipeline = ImbPipeline(
+            steps=preprocessing_fn() + [('classifier', clone(model))]
+        )
+
+        # cross_validate handles:
+        # 1. Splitting into train/test folds
+        # 2. Fitting the ENTIRE pipeline (including feature selection) on train only
+        # 3. Scoring on the test fold (which was never seen during any fitting step)
+        cv_results = cross_validate(
+            full_pipeline, X, y,
+            scoring=scoring_dict,
+            cv=cv_split,
+            n_jobs=-1,
+            error_score='raise'
+        )
+
+        # Reformat results to match cv_comparison output format
+        results_dict[name] = {}
+        for metric in scoring_list:
+            key = f"test_{metric}"
+            results_dict[name][key] = cv_results[f"test_{metric}"]
+
+    # Print results in the same format as cv_comparison
+    for name in classifiers.keys():
+        print('---', name, label, 'Results (Nested CV):')
+        for metric in scoring_list:
+            key = f"test_{metric}"
+            scores = results_dict[name][key]
+            print(f"{metric}: {np.mean(scores):.4f}, Variance: {np.var(scores):.4f}")
+
+    if output:
+        return results_dict
 
 
 # We code Stability Selection
