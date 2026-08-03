@@ -535,3 +535,50 @@ class StabilitySelection(BaseEstimator, TransformerMixin):
         print(f"  >= 0.6: {np.sum(freq >= 0.6)} features")
 
 
+# Error analysis code
+# we want to print a confusion matrix and also find the indices of the incorrect classification points
+# we first find the true negatives, false positives, false negatives and true positives and print them out
+# then, we find the indices of all the false negatives and false positives(use np.where)
+# lastly, print these indices out
+
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, fbeta_score
+from sklearn.model_selection import learning_curve, RepeatedStratifiedKFold
+
+def error_analysis(pipeline, X_test, y_test, X_test_raw=None, model_name="model"):
+    """
+    Prints a confusion matrix breakdown and returns the indices of false
+    negatives and false positives so you can inspect the actual rows.
+
+    Args
+    mostly self explanatory
+ 
+    X_test_raw : optional: pass original X_test here
+        if you want to look at real feature
+        values for misclassified rows, rather than the processed
+        numpy array the pipeline actually used.
+    """
+    y_pred = pipeline.predict(X_test)
+ 
+    tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+    print(f"--- {model_name} ---")
+    print(f"True negatives:  {tn}")
+    print(f"False positives: {fp}")
+    print(f"False negatives: {fn}")
+    print(f"True positives:  {tp}")
+ 
+    y_test_arr = np.asarray(y_test)
+    false_neg_idx = np.where((y_test_arr == 1) & (y_pred == 0))[0]
+    false_pos_idx = np.where((y_test_arr == 0) & (y_pred == 1))[0]
+ 
+    print(f"\n{len(false_neg_idx)} false negatives, {len(false_pos_idx)} false positives")
+ 
+    if X_test_raw is not None:
+        print("\nFalse negative rows:")
+        print(X_test_raw.iloc[false_neg_idx])
+ 
+        print("\nFalse positive rows (false alarms):")
+        print(X_test_raw.iloc[false_pos_idx])
+ 
+    return {"false_neg_idx": false_neg_idx, "false_pos_idx": false_pos_idx,
+            "y_pred": y_pred}
